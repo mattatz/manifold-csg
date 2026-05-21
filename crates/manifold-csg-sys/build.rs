@@ -586,6 +586,23 @@ fn build_wasm_unknown_unknown() {
 
     let manifold_build = out_dir.join("manifold-build-wasm32-uu");
 
+    // Invalidate the cmake cache if the source path drifted. Cargo
+    // checks dependencies out into per-commit dirs like
+    // `.cargo/git/checkouts/<repo>-<hash>/<sha>/...`, so bumping the
+    // crate to a new git rev changes `wasm_dir.display()` even though
+    // OUT_DIR stays the same. The cached CMakeCache.txt then refers to
+    // a source dir that no longer exists, and the next `cmake -S` call
+    // bails with "The source ... does not match the source ... used to
+    // generate cache." Use a stamp file to detect drift and wipe the
+    // build dir so cmake reconfigures from scratch.
+    let cmake_stamp = out_dir.join(".manifold-cmake-source-stamp");
+    let cur_src = wasm_dir.display().to_string();
+    let prev_src = std::fs::read_to_string(&cmake_stamp).unwrap_or_default();
+    if prev_src != cur_src && manifold_build.exists() {
+        let _ = std::fs::remove_dir_all(&manifold_build);
+    }
+    let _ = std::fs::write(&cmake_stamp, &cur_src);
+
     let status = Command::new("cmake")
         .args([
             "-S",
