@@ -441,6 +441,16 @@ impl MeshGL64 {
         Self { ptr }
     }
 
+    /// Internal accessor for the raw `ManifoldMeshGL64*` handle.
+    ///
+    /// Used by `Manifold::from_meshgl64` to build a Manifold without
+    /// re-allocating + copying the vertex/triangle arrays — important
+    /// when the merge vectors are populated and we want the Manifold
+    /// constructor to read them.
+    pub(crate) fn ptr(&self) -> *mut ManifoldMeshGL64 {
+        self.ptr
+    }
+
     /// Copy merge-from vertex indices out as a flat u64 array.
     #[must_use]
     pub fn merge_from_vert(&self) -> Vec<u64> {

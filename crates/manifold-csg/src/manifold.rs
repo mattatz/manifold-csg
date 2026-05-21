@@ -24,6 +24,7 @@ use std::ops;
 
 use crate::bounding_box::BoundingBox;
 use crate::cross_section::CrossSection;
+use crate::mesh::MeshGL64;
 use crate::types::CsgError;
 
 /// A safe wrapper around a manifold3d Manifold object.
@@ -133,6 +134,36 @@ impl Manifold {
         unsafe { manifold_of_meshgl64(manifold, meshgl) };
         // SAFETY: meshgl is valid and no longer needed.
         unsafe { manifold_delete_meshgl64(meshgl) };
+
+        // SAFETY: manifold is valid. Read-only status query.
+        let status = unsafe { manifold_status(manifold) };
+        if status != ManifoldError::NoError {
+            // SAFETY: manifold is valid. Frees the allocation on error path.
+            unsafe { manifold_delete_manifold(manifold) };
+            return Err(CsgError::ManifoldStatus(status));
+        }
+
+        Ok(Self { ptr: manifold })
+    }
+
+    /// Create a Manifold from a pre-built [`MeshGL64`].
+    ///
+    /// Use this when the caller has populated merge vectors via
+    /// [`MeshGL64::merge`] to weld coincident vertices — the Manifold
+    /// constructor reads those vectors to make a non-manifold input
+    /// manifold-clean. Building a Manifold from raw arrays via
+    /// [`from_mesh_f64`](Self::from_mesh_f64) bypasses this fix.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CsgError::ManifoldStatus` if the mesh is not a closed
+    /// manifold even after the merge step.
+    pub fn from_meshgl64(meshgl: &MeshGL64) -> Result<Self, CsgError> {
+        // SAFETY: manifold_alloc_manifold returns a valid handle.
+        let manifold = unsafe { manifold_alloc_manifold() };
+        // SAFETY: meshgl.ptr is a live MeshGL64 handle (the wrapper owns
+        // it); manifold is a fresh allocation.
+        unsafe { manifold_of_meshgl64(manifold, meshgl.ptr()) };
 
         // SAFETY: manifold is valid. Read-only status query.
         let status = unsafe { manifold_status(manifold) };
