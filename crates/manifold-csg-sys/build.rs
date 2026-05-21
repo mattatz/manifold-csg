@@ -2,6 +2,17 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Normalize a path to forward slashes for CMake `-D` / `SHELL:` consumers.
+///
+/// On Windows, `Path::display()` produces backslashes which CMake's
+/// `SHELL:` token splitter treats as escape characters and strips,
+/// mangling `-isystem C:\foo\bar` into `-isystem C:foobar`. Forward
+/// slashes are universally accepted by CMake on Windows and survive
+/// the SHELL: round-trip.
+fn cmake_path(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 /// Recursively search for a static library under `dir`.
 ///
 /// Searches for `lib{name}.a` (Unix) and `{name}.lib` (MSVC).
@@ -569,14 +580,17 @@ fn build_wasm_unknown_unknown() {
     let status = Command::new("cmake")
         .args([
             "-S",
-            wasm_dir.to_str().unwrap(),
+            &cmake_path(&wasm_dir),
             "-B",
-            manifold_build.to_str().unwrap(),
-            &format!("-DCMAKE_TOOLCHAIN_FILE={}", shim_toolchain.display()),
+            &cmake_path(&manifold_build),
+            &format!("-DCMAKE_TOOLCHAIN_FILE={}", cmake_path(&shim_toolchain)),
             "-DCMAKE_BUILD_TYPE=Release",
-            &format!("-DWASM_CXX_SHIM_DIR={}", shim_src.display()),
-            &format!("-DWASM32_UU_INC_DIR={}", wasm_dir.join("include").display()),
-            &format!("-DLIBCXX_HEADERS={}", libcxx_headers.display()),
+            &format!("-DWASM_CXX_SHIM_DIR={}", cmake_path(&shim_src)),
+            &format!(
+                "-DWASM32_UU_INC_DIR={}",
+                cmake_path(&wasm_dir.join("include"))
+            ),
+            &format!("-DLIBCXX_HEADERS={}", cmake_path(&libcxx_headers)),
         ])
         .status()
         .expect("failed to run cmake configure for manifold (wasm32-uu)");
