@@ -534,13 +534,22 @@ fn build_wasm_unknown_unknown() {
     );
 
     if !shim_build.join("libc/libwasm-cxx-shim-libc.a").exists() {
+        // Force the Ninja generator: on Windows, CMake defaults to the
+        // Visual Studio generator which drives MSBuild + cl.exe — but
+        // the wasm-cxx-shim build needs clang++ targeting wasm32, and
+        // MSBuild can't be configured to use a Linux-style toolchain
+        // file with a non-MSVC compiler. Ninja drives the toolchain
+        // file's CC/CXX directly. On macOS/Linux this matches the
+        // platform default and is a no-op.
         let status = Command::new("cmake")
             .args([
                 "-S",
-                shim_src.to_str().unwrap(),
+                &cmake_path(&shim_src),
                 "-B",
-                shim_build.to_str().unwrap(),
-                &format!("-DCMAKE_TOOLCHAIN_FILE={}", shim_toolchain.display()),
+                &cmake_path(&shim_build),
+                "-G",
+                "Ninja",
+                &format!("-DCMAKE_TOOLCHAIN_FILE={}", cmake_path(&shim_toolchain)),
                 "-DCMAKE_BUILD_TYPE=Release",
             ])
             .status()
@@ -583,6 +592,8 @@ fn build_wasm_unknown_unknown() {
             &cmake_path(&wasm_dir),
             "-B",
             &cmake_path(&manifold_build),
+            "-G",
+            "Ninja",
             &format!("-DCMAKE_TOOLCHAIN_FILE={}", cmake_path(&shim_toolchain)),
             "-DCMAKE_BUILD_TYPE=Release",
             &format!("-DWASM_CXX_SHIM_DIR={}", cmake_path(&shim_src)),
