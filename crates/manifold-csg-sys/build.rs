@@ -826,9 +826,27 @@ fn find_llvm() -> (PathBuf, PathBuf, Vec<PathBuf>) {
 
     if let Ok(headers) = env::var("WASM_CXX_SHIM_LIBCXX_HEADERS") {
         let headers = PathBuf::from(headers);
-        let clangpp = which("clang++")
+        // Search the candidate bin dirs (which include WASM_CXX_SHIM_LLVM_BIN_DIR)
+        // before falling back to PATH. On Windows, the LLVM official installer
+        // sets WASM_CXX_SHIM_LLVM_BIN_DIR but does NOT add itself to PATH, so
+        // a PATH-only lookup misses it.
+        let clangpp = candidates
+            .iter()
+            .find_map(|dir| {
+                for name in ["clang++", "clang++.exe", "clang", "clang.exe"] {
+                    let candidate = dir.join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+                None
+            })
+            .or_else(|| which("clang++"))
             .or_else(|| which("clang"))
-            .expect("clang++/clang not found on PATH");
+            .expect(
+                "clang++/clang not found in WASM_CXX_SHIM_LLVM_BIN_DIR \
+                 nor any candidate LLVM dir nor PATH",
+            );
         warn_if_system_libcxx(&headers);
         return (clangpp, headers, candidates);
     }
