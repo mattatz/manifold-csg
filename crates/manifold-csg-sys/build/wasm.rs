@@ -48,6 +48,17 @@ const WASM_CXX_SHIM_GIT: &str = "https://github.com/zmerlynn/wasm-cxx-shim.git";
 // "Versioning" / "Pin / shim follow-ups".
 const WASM_CXX_SHIM_TAG: &str = "v0.5.0";
 
+/// Normalize a path to forward slashes for CMake `-D` / `SHELL:` consumers.
+///
+/// On Windows, `Path::display()` produces backslashes which CMake's
+/// `SHELL:` token splitter treats as escape characters and strips,
+/// mangling `-isystem C:\foo\bar` into `-isystem C:foobar`. Forward
+/// slashes are universally accepted by CMake on Windows and survive
+/// the SHELL: round-trip.
+fn cmake_path(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 /// Diagnostic context populated up-front in `build_wasm_unknown_unknown()`,
 /// passed to `bail_with_diagnostics()` so cmake/clang failures emit the
 /// resolved toolchain paths the user actually needs to debug.
@@ -138,9 +149,27 @@ fn find_llvm() -> (PathBuf, PathBuf, Vec<PathBuf>) {
 
     if let Ok(headers) = env::var("WASM_CXX_SHIM_LIBCXX_HEADERS") {
         let headers = PathBuf::from(headers);
-        let clangpp = which("clang++")
+        // Search the candidate bin dirs (which include WASM_CXX_SHIM_LLVM_BIN_DIR)
+        // before falling back to PATH. On Windows, the LLVM official installer
+        // sets WASM_CXX_SHIM_LLVM_BIN_DIR but does NOT add itself to PATH, so
+        // a PATH-only lookup misses it.
+        let clangpp = candidates
+            .iter()
+            .find_map(|dir| {
+                for name in ["clang++", "clang++.exe", "clang", "clang.exe"] {
+                    let candidate = dir.join(name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+                None
+            })
+            .or_else(|| which("clang++"))
             .or_else(|| which("clang"))
-            .expect("clang++/clang not found on PATH");
+            .expect(
+                "clang++/clang not found in WASM_CXX_SHIM_LLVM_BIN_DIR \
+                 nor any candidate LLVM dir nor PATH",
+            );
         warn_if_system_libcxx(&headers);
         return (clangpp, headers, candidates);
     }
@@ -353,13 +382,22 @@ pub fn build_wasm_unknown_unknown() {
     );
 
     if !shim_build.join("libc/libwasm-cxx-shim-libc.a").exists() {
+        // Force the Ninja generator: on Windows, CMake defaults to the
+        // Visual Studio generator which drives MSBuild + cl.exe — but
+        // the wasm-cxx-shim build needs clang++ targeting wasm32, and
+        // MSBuild can't be configured to use a Linux-style toolchain
+        // file with a non-MSVC compiler. Ninja drives the toolchain
+        // file's CC/CXX directly. On macOS/Linux this matches the
+        // platform default and is a no-op.
         let status = Command::new("cmake")
             .args([
                 "-S",
-                shim_src.to_str().unwrap(),
+                &cmake_path(&shim_src),
                 "-B",
-                shim_build.to_str().unwrap(),
-                &format!("-DCMAKE_TOOLCHAIN_FILE={}", shim_toolchain.display()),
+                &cmake_path(&shim_build),
+                "-G",
+                "Ninja",
+                &format!("-DCMAKE_TOOLCHAIN_FILE={}", cmake_path(&shim_toolchain)),
                 "-DCMAKE_BUILD_TYPE=Release",
             ])
             .args(crate::cmake_launcher_args())
@@ -397,17 +435,39 @@ pub fn build_wasm_unknown_unknown() {
 
     let manifold_build = out_dir.join("manifold-build-wasm32-uu");
 
+    // Invalidate the cmake cache if the source path drifted. Cargo
+    // checks dependencies out into per-commit dirs like
+    // `.cargo/git/checkouts/<repo>-<hash>/<sha>/...`, so bumping the
+    // crate to a new git rev changes `wasm_dir.display()` even though
+    // OUT_DIR stays the same. The cached CMakeCache.txt then refers to
+    // a source dir that no longer exists, and the next `cmake -S` call
+    // bails with "The source ... does not match the source ... used to
+    // generate cache." Use a stamp file to detect drift and wipe the
+    // build dir so cmake reconfigures from scratch.
+    let cmake_stamp = out_dir.join(".manifold-cmake-source-stamp");
+    let cur_src = wasm_dir.display().to_string();
+    let prev_src = std::fs::read_to_string(&cmake_stamp).unwrap_or_default();
+    if prev_src != cur_src && manifold_build.exists() {
+        let _ = std::fs::remove_dir_all(&manifold_build);
+    }
+    let _ = std::fs::write(&cmake_stamp, &cur_src);
+
     let status = Command::new("cmake")
         .args([
             "-S",
-            wasm_dir.to_str().unwrap(),
+            &cmake_path(&wasm_dir),
             "-B",
-            manifold_build.to_str().unwrap(),
-            &format!("-DCMAKE_TOOLCHAIN_FILE={}", shim_toolchain.display()),
+            &cmake_path(&manifold_build),
+            "-G",
+            "Ninja",
+            &format!("-DCMAKE_TOOLCHAIN_FILE={}", cmake_path(&shim_toolchain)),
             "-DCMAKE_BUILD_TYPE=Release",
-            &format!("-DWASM_CXX_SHIM_DIR={}", shim_src.display()),
-            &format!("-DWASM32_UU_INC_DIR={}", wasm_dir.join("include").display()),
-            &format!("-DLIBCXX_HEADERS={}", libcxx_headers.display()),
+            &format!("-DWASM_CXX_SHIM_DIR={}", cmake_path(&shim_src)),
+            &format!(
+                "-DWASM32_UU_INC_DIR={}",
+                cmake_path(&wasm_dir.join("include"))
+            ),
+            &format!("-DLIBCXX_HEADERS={}", cmake_path(&libcxx_headers)),
             // Override the shim's tested-pin default so wasm-uu builds
             // against the same manifold pin as host. Otherwise our FFI
             // declarations target the host's (newer) C API surface and
